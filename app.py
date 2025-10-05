@@ -126,6 +126,117 @@ def folium_map():
         attr='Tiles &copy; Esri &mdash; Source: Esri, GEBCO, NOAA, National Geographic, DeLorme, NAVTEQ, and other contributors',
         control_scale=True,
     )
+    
+def build_map_for_mode(mode: str, smoothed_pred, smoothed_obs, metrics, key_suffix: str):
+    """Build and return a folium.Map for the requested mode: 'pred'|'obs'|'both'."""
+    ZOOM_MIN = 5
+    ZOOM_MAX = 9
+    zoom = int(st.session_state.get("zoom", ZOOM_START))
+    zoom = max(ZOOM_MIN, min(ZOOM_MAX, zoom))
+
+    m = folium.Map(
+        location=CENTER,
+        zoom_start=zoom,
+        min_zoom=ZOOM_MIN,
+        max_zoom=ZOOM_MAX,
+        tiles='https://services.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
+        attr='Tiles &copy; Esri &mdash; Source: Esri, GEBCO, NOAA, National Geographic, DeLorme, NAVTEQ, and other contributors',
+        control_scale=True,
+    )
+
+    # bbox rectangle
+    sw = [LAT_MIN, LON_MIN]
+    ne = [LAT_MAX, LON_MAX]
+    folium.Rectangle(bounds=[sw, ne], color="#ff7800", weight=2, fill=False, tooltip="BBox").add_to(m)
+
+    # apply same transforms as in folium_map
+    try:
+        sm_p = np.transpose(smoothed_pred)
+        sm_o = np.transpose(smoothed_obs)
+        rot = st.session_state.get('overlay_rotation', '90° CW')
+        if rot == '90° CW':
+            sm_p = np.rot90(sm_p, k=3)
+            sm_o = np.rot90(sm_o, k=3)
+        elif rot == '180°':
+            sm_p = np.rot90(sm_p, k=2)
+            sm_o = np.rot90(sm_o, k=2)
+        elif rot == '90° CCW':
+            sm_p = np.rot90(sm_p, k=1)
+            sm_o = np.rot90(sm_o, k=1)
+        mir = st.session_state.get('overlay_mirroring', 'None')
+        if mir == 'Vertical (flip up/down)':
+            sm_p = np.flipud(sm_p); sm_o = np.flipud(sm_o)
+        elif mir == 'Horizontal (mirror left/right)':
+            sm_p = np.fliplr(sm_p); sm_o = np.fliplr(sm_o)
+        elif mir == 'Both':
+            sm_p = np.flipud(np.fliplr(sm_p)); sm_o = np.flipud(np.fliplr(sm_o))
+    except Exception:
+        sm_p, sm_o = smoothed_pred, smoothed_obs
+
+    H, W = sm_p.shape
+    ds = int(st.session_state.get('overlay_downsample', 1))
+    rows = np.arange(0, H, ds)
+    cols = np.arange(0, W, ds)
+    lat_edges = np.linspace(LAT_MAX, LAT_MIN, H+1)
+    lon_edges = np.linspace(LON_MIN, LON_MAX, W+1)
+
+    # color scales
+    p_low = 2; p_high = 98
+    vmax_pred = float(np.nanpercentile(sm_p, p_high))
+    vmax_obs = float(np.nanpercentile(sm_o, p_high))
+    vmin_pred = float(np.nanpercentile(sm_p, p_low))
+    vmin_obs = float(np.nanpercentile(sm_o, p_low))
+    if vmax_pred <= vmin_pred:
+        vmax_pred = max(vmin_pred + 1e-6, float(sm_p.max()) if sm_p.max() > 0 else 1.0)
+    if vmax_obs <= vmin_obs:
+        vmax_obs = max(vmin_obs + 1e-6, float(sm_o.max()) if sm_o.max() > 0 else 1.0)
+    cmap_pred = cm.get_cmap('Reds'); cmap_obs = cm.get_cmap('Blues')
+    norm_pred = mcolors.Normalize(vmin=vmin_pred, vmax=vmax_pred)
+    norm_obs = mcolors.Normalize(vmin=vmin_obs, vmax=vmax_obs)
+
+    features_pred = {"type": "FeatureCollection", "features": []}
+    features_obs = {"type": "FeatureCollection", "features": []}
+
+    thresh_pct = float(st.session_state.get('overlay_threshold_pct', 5)) / 100.0
+    for i in rows:
+        for j in cols:
+            block_pred = sm_p[i:i+ds, j:j+ds]
+            block_obs = sm_o[i:i+ds, j:j+ds]
+            val_pred = float(np.nanmean(block_pred)) if block_pred.size else 0.0
+            val_obs = float(np.nanmean(block_obs)) if block_obs.size else 0.0
+            keep_pred = (val_pred > 0) and (val_pred >= vmax_pred * thresh_pct)
+            keep_obs = (val_obs > 0) and (val_obs >= vmax_obs * thresh_pct)
+            if not (keep_pred or keep_obs):
+                continue
+            lat0 = lat_edges[i]; lat1 = lat_edges[min(i+ds, H)]
+            lon0 = lon_edges[j]; lon1 = lon_edges[min(j+ds, W)]
+            poly_latlon = [[lat0, lon0], [lat0, lon1], [lat1, lon1], [lat1, lon0], [lat0, lon0]]
+            if keep_pred and mode in ('both', 'pred'):
+                rgba = cmap_pred(norm_pred(val_pred)); hexcol = mcolors.to_hex(rgba)
+                feat = {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [[[lon, lat] for lat, lon in poly_latlon]]},
+                        "properties": {"value": val_pred, "style": {"fillColor": hexcol, "color": hexcol, "weight": 0, "fillOpacity": float(st.session_state.get('overlay_opacity', 0.6))}}}
+                features_pred["features"].append(feat)
+            if keep_obs and mode in ('both', 'obs'):
+                rgba = cmap_obs(norm_obs(val_obs)); hexcol = mcolors.to_hex(rgba)
+                feat = {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [[[lon, lat] for lat, lon in poly_latlon]]},
+                        "properties": {"value": val_obs, "style": {"fillColor": hexcol, "color": hexcol, "weight": 0, "fillOpacity": float(st.session_state.get('overlay_opacity', 0.6))}}}
+                features_obs["features"].append(feat)
+
+    if features_pred["features"]:
+        folium.GeoJson(features_pred, name='Predicted (grid)').add_to(m)
+    if features_obs["features"]:
+        folium.GeoJson(features_obs, name='Observed (grid)').add_to(m)
+
+    # legends
+    ramp_pred = [mcolors.to_hex(cmap_pred(x)) for x in np.linspace(0.05, 1.0, 7)]
+    ramp_obs = [mcolors.to_hex(cmap_obs(x)) for x in np.linspace(0.05, 1.0, 7)]
+    if mode in ('both', 'pred'):
+        LinearColormap(ramp_pred, vmin=vmin_pred, vmax=vmax_pred, caption='Predicted (smoothed)').add_to(m)
+    if mode in ('both', 'obs'):
+        LinearColormap(ramp_obs, vmin=vmin_obs, vmax=vmax_obs, caption='Observed (smoothed)').add_to(m)
+    folium.LayerControl().add_to(m)
+
+    return m
 
     # Fit bounds using SW and NE corners: [[south, west], [north, east]]
     sw = [LAT_MIN, LON_MIN]
@@ -367,7 +478,18 @@ def map_fragment():
     st.title("Shark Foraging ML Model Evaluation")
     # if st.button(type="primary", label="Reset view"):
     #    st.session_state.zoom = ZOOM_START
-    folium_map()
+    # compute predictions once
+    smoothed_pred, smoothed_obs, metrics = get_predictions()
+
+    cols = st.columns([1,1])
+    with cols[0]:
+        st.subheader("Predicted (grid)")
+        m1 = build_map_for_mode('pred', smoothed_pred, smoothed_obs, metrics, key_suffix='pred')
+        st_folium(m1, key="map_pred", width="stretch")
+    with cols[1]:
+        st.subheader("Observed (grid)")
+        m2 = build_map_for_mode('obs', smoothed_pred, smoothed_obs, metrics, key_suffix='obs')
+        st_folium(m2, key="map_obs", width="stretch")
 
 # APP LAYOUT
 _img("banner_dark_blue.png")
@@ -379,7 +501,7 @@ with st.expander("Interface Overview", expanded=False):
 with st.sidebar:
     _img("darkrise_shark_logo.png")
     st.header("Map Controls")
-    st.slider("Zoom start", min_value=5, max_value=9, value=max(5, min(9, ZOOM_START)), key="zoom")
+    st.slider("Zoom start", min_value=5, max_value=9, value=5, key="zoom")
     st.checkbox("Show selected training area", value=True, key="show_bbox")
     # Overlay display controls
     st.markdown("---")
@@ -389,10 +511,6 @@ with st.sidebar:
     st.slider("Downsample factor (1 = no downsample)", 1, 8, value=1, key="overlay_downsample")
 
 
-cols = st.columns([2,2])
-with cols[0]:
-    map_fragment()
-with cols[1]:
-    pass
+map_fragment()
 
 
