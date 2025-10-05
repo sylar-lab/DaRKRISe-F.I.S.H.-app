@@ -141,7 +141,7 @@ def folium_map():
     except Exception:
         pass
 
-    metr_cols = st.columns([1,1,1,1,1])
+    metr_cols = st.columns([1,1,1])
     with metr_cols[0]:
         st.metric('Totals — observed sharks', SiNumber(obs_total))
     with metr_cols[1]:
