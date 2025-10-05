@@ -71,7 +71,15 @@ if 'test_ds' not in st.session_state:
     st.session_state.test_ds = pickle.load(open(ROOT/'stored'/'test_ds.pkl', 'rb'))
 if 'test_loader' not in st.session_state:
     st.session_state.test_loader = pickle.load(open(ROOT/'stored'/'test_loader.pkl', 'rb'))
+if "overlay_rotation" not in st.session_state:
+    st.session_state.overlay_rotation = "90° CCW"
+if "overlay_mirroring" not in st.session_state:
+    st.session_state.overlay_mirroring = "None"
 
+with st.sidebar:
+    pass
+    #st.selectbox("Rotation", ["0°", "90° CW", "180°", "90° CCW"], index=1, key="overlay_rotation")
+    #st.selectbox("Mirroring", ["None", "Vertical (flip up/down)", "Horizontal (mirror left/right)", "Both"], index=0, key="overlay_mirroring")
 
 class SiNumber(float):
     def __new__(cls, value, precision=2):
@@ -134,10 +142,35 @@ def folium_map():
 
     with st.spinner("Computing prediction, please wait..."):
         smoothed_pred, smoothed_obs, (corr, mean_dev, obs_total, pred_total) = get_predictions()
-    # Fix orientation: rotate arrays 90° clockwise (user requested fixed orientation)
+    # Apply fixed main-diagonal transpose, then apply rotation and mirroring chosen by user
     try:
-        smoothed_pred = np.rot90(smoothed_pred, k=3)
-        smoothed_obs = np.rot90(smoothed_obs, k=3)
+        # fixed transpose
+        smoothed_pred = np.transpose(smoothed_pred)
+        smoothed_obs = np.transpose(smoothed_obs)
+
+        # rotation
+        rot = st.session_state.get('overlay_rotation', '90° CW')
+        if rot == '90° CW':
+            smoothed_pred = np.rot90(smoothed_pred, k=3)
+            smoothed_obs = np.rot90(smoothed_obs, k=3)
+        elif rot == '180°':
+            smoothed_pred = np.rot90(smoothed_pred, k=2)
+            smoothed_obs = np.rot90(smoothed_obs, k=2)
+        elif rot == '90° CCW':
+            smoothed_pred = np.rot90(smoothed_pred, k=1)
+            smoothed_obs = np.rot90(smoothed_obs, k=1)
+
+        # mirroring
+        mir = st.session_state.get('overlay_mirroring', 'None')
+        if mir == 'Vertical (flip up/down)':
+            smoothed_pred = np.flipud(smoothed_pred)
+            smoothed_obs = np.flipud(smoothed_obs)
+        elif mir == 'Horizontal (mirror left/right)':
+            smoothed_pred = np.fliplr(smoothed_pred)
+            smoothed_obs = np.fliplr(smoothed_obs)
+        elif mir == 'Both':
+            smoothed_pred = np.flipud(np.fliplr(smoothed_pred))
+            smoothed_obs = np.flipud(np.fliplr(smoothed_obs))
     except Exception:
         pass
 
@@ -304,11 +337,23 @@ def get_predictions():
     # In the TEST dataset, valid target times are local t ∈ [K, T_te_full-1]
     last_t_local = test_ds.T - 1
     pick = (tij_cat[:,0] == last_t_local)
-    ii, jj = tij_cat[pick,1], tij_cat[pick,2]
+    ii, jj = tij_cat[pick,1].astype(int), tij_cat[pick,2].astype(int)
 
     H, W = test_ds.H, test_ds.W
     last_obs_grid  = np.zeros((H,W), dtype=np.float32)
     last_pred_grid = np.zeros((H,W), dtype=np.float32)
+
+    # Defensive check: some datasets/indexing may provide coordinates as (x,col),(y,row)
+    # If indices exceed shape bounds, try swapping ii/jj to restore row,col order.
+    try:
+        if (ii.max() >= H) or (jj.max() >= W):
+            print(f"Index bounds suggest ii/jj are swapped (ii.max()={ii.max()}, H={H}, jj.max()={jj.max()}, W={W}) - swapping indices")
+            ii, jj = jj, ii
+    except Exception:
+        # if arrays empty or other issue, ignore and proceed
+        pass
+
+    # assign into grid using row (ii), col (jj)
     last_obs_grid[ii, jj]  = y_cat[pick]
     last_pred_grid[ii, jj] = pred_cat[pick]
 
