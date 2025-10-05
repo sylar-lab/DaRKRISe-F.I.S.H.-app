@@ -1,0 +1,3 @@
+[submodule "model"]
+	path = model
+	url = https://github.com/sylar-lab/DaRKRISe-F.I.S.H..git
