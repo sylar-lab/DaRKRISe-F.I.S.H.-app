@@ -339,8 +339,8 @@ with st.sidebar:
     # Overlay display controls
     st.markdown("---")
     st.subheader("Overlay display")
-    st.slider("Overlay opacity", 0.0, 1.0, value=0.69, key="overlay_opacity")
-    st.slider("Hide low values (% of max)", 0, 50, value=14, key="overlay_threshold_pct")
+    st.slider("Overlay opacity", 0.0, 1.0, value=0.85, key="overlay_opacity")
+    st.slider("Hide low values (% of max)", 5, 50, value=14, key="overlay_threshold_pct")
     st.slider("Downsample factor (1 = no downsample)", 1, 8, value=1, key="overlay_downsample")
 
 
