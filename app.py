@@ -15,6 +15,29 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 import pickle
 from torch import nn
+from model.src.helpers import database_helpers, model_helpers
+
+class TinyTransformerMultiExo(nn.Module):
+    """
+    Input: batch['seq'] ∈ [B, K, C_in] with C_in = 1 (counts) + C (features)
+    Output: log-rate for target y (Poisson)
+    """
+    def __init__(self, K, C_in, d=64, nhead=4, nlayers=2):
+        super().__init__()
+        self.pos   = nn.Parameter(torch.randn(1, K, d) * 0.01)
+        self.embed = nn.Linear(C_in, d)
+        enc_layer  = nn.TransformerEncoderLayer(d_model=d, nhead=nhead, batch_first=True)
+        self.enc   = nn.TransformerEncoder(enc_layer, num_layers=nlayers)
+        self.head  = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, 1))
+        self.alpha = nn.Parameter(torch.tensor(0.0))
+
+    def forward(self, batch):
+        x = batch['seq']                   # [B,K,C_in]
+        h = self.embed(x) + self.pos       # [B,K,d]
+        h = self.enc(h)                    # [B,K,d]
+        h_last = h[:, -1, :]
+        out = self.head(h_last).squeeze(-1)
+        return self.alpha + out            # log-rate
 
 st.set_page_config(
 	page_title="Home",
@@ -34,15 +57,13 @@ LAT_MIN, LAT_MAX = 28, 42
 LON_MIN, LON_MAX = -81, -65
 CENTER = [(LAT_MIN + LAT_MAX) / 2.0, (LON_MIN + LON_MAX) / 2.0]
 ZOOM_START = 6
-from src.models.transformer_model import TinyTransformerMultiExo
-from src.helpers import database_helpers, model_helpers
 
 if 'model' not in st.session_state:
-    st.session_state.model = pickle.load(open(ROOT/'src'/'models'/'model.pkl', 'rb'))
+    st.session_state.model = pickle.load(open(ROOT/'stored'/'model.pkl', 'rb'))
 if 'test_ds' not in st.session_state:
-    st.session_state.test_ds = pickle.load(open(ROOT/'src'/'models'/'test_ds.pkl', 'rb'))
+    st.session_state.test_ds = pickle.load(open(ROOT/'stored'/'test_ds.pkl', 'rb'))
 if 'test_loader' not in st.session_state:
-    st.session_state.test_loader = pickle.load(open(ROOT/'src'/'models'/'test_loader.pkl', 'rb'))
+    st.session_state.test_loader = pickle.load(open(ROOT/'stored'/'test_loader.pkl', 'rb'))
 
 def _img(path: str):
     p = IMAGES / path
@@ -145,14 +166,14 @@ def map_fragment():
 _img("banner_dark_blue.png")
 
 with st.expander("Interface Overview", expanded=False):
-    st.markdown('This web app is designed to evaluate the Shark Foraging Detection ML model created by the DaRKRISe team during the 2025 NASA Space Apps Challenge.')
-    st.markdown('The app features an interactive map and various controls to explore the model\'s implementation and results.')
-    st.markdown('Feel free to explore the map and adjust the settings in the sidebar to see how they affect the view!')
+    st.link_button('Visit FULL project description website', 'https://www.spaceappschallenge.org/2025/find-a-team/darkrise/?tab=project')
+    st.markdown('This web app is designed to evaluate the model inference created by the DaRKRISe team during the 2025 NASA Space Apps Challenge.')
+    st.markdown('The app features an interactive map to explore the model\'s inference results.')
 with st.sidebar:
     _img("darkrise_shark_logo.png")
     st.header("Map Controls")
     st.slider("Zoom start", min_value=3, max_value=12, value=ZOOM_START, key="zoom")
-    st.checkbox("Show bbox rectangle", value=True, key="show_bbox")
+    st.checkbox("Show training area", value=True, key="show_bbox")
 
 map_fragment()
 cols = st.columns([2,2])
@@ -164,4 +185,5 @@ with cols[1]:
         st.header("AI MODEL (IMPLEMENTATION AND RESULTS)")"""
 
 print(get_predictions())
+
 
