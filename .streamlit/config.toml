@@ -1,0 +1,16 @@
+[theme]
+# Dark ocean / shark-inspired theme
+base = "dark"
+# Blue accent for buttons and highlights (bluer)
+primaryColor = "#1E90FF"
+# Deep navy background (shifted toward blue)
+backgroundColor = "#021428"
+# Panel background slightly lighter and bluer
+secondaryBackgroundColor = "#05345C"
+# Light text color for readability on dark backgrounds (brighter)
+textColor = "#F0FAFF"
+# Clean, modern sans-serif
+font = "Source Sans Pro"
+
+# Tip: Streamlit picks this up on restart. You can also set layout defaults in
+# the app via st.set_page_config(layout='wide').
