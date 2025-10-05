@@ -15,7 +15,6 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 import pickle
 from torch import nn
-from model.src.helpers import database_helpers, model_helpers
 from si_prefix import si_format, si_parse
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
@@ -144,15 +143,11 @@ def folium_map():
 
     metr_cols = st.columns([1,1,1,1,1])
     with metr_cols[0]:
-        st.metric('Per-sample corr (non-trivial)', SiNumber(corr))
+        st.metric('Totals — observed sharks', SiNumber(obs_total))
     with metr_cols[1]:
-        st.metric('Mean Poisson deviance', SiNumber(mean_dev))
+        st.metric('Predicted sharks', SiNumber(pred_total))
     with metr_cols[2]:
-        st.metric('Totals — observed', SiNumber(obs_total))
-    with metr_cols[3]:
-        st.metric('Predicted', SiNumber(pred_total))
-    with metr_cols[4]:
-        st.metric('Ratio', SiNumber(pred_total/max(1,obs_total)))
+        st.metric('True positives', f'{round(100*pred_total/max(1,obs_total), 1)}%')
     
     # --- render smoothed arrays as GeoJSON grid tiles (vector only) ---
     ds = int(st.session_state.get('overlay_downsample', 1))
