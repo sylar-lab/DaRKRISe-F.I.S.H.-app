@@ -348,10 +348,6 @@ cols = st.columns([2,2])
 with cols[0]:
     map_fragment()
 with cols[1]:
-    st.markdown('\n')
-    st.markdown('\n')
-    st.markdown('\n')
-    st.title('Dataset visualization')
-    st.image(ROOT/'data'/'images'/'Shark positions on workd map.png')
+    pass
 
 
