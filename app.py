@@ -16,6 +16,7 @@ from scipy.ndimage import gaussian_filter
 import pickle
 from torch import nn
 from model.src.helpers import database_helpers, model_helpers
+from si_prefix import si_format, si_parse
 
 class TinyTransformerMultiExo(nn.Module):
     """
@@ -65,6 +66,25 @@ if 'test_ds' not in st.session_state:
 if 'test_loader' not in st.session_state:
     st.session_state.test_loader = pickle.load(open(ROOT/'stored'/'test_loader.pkl', 'rb'))
 
+
+class SiNumber(float):
+    def __new__(cls, value, precision=2):
+        instance = super().__new__(cls, value)
+        instance._precision = precision
+        return instance
+
+    def __float__(self):
+        return si_parse(self.__repr__())
+
+    @classmethod
+    def parse(cls, si_value, precision=2):
+        instance = cls(si_parse(si_value), precision)
+        return instance
+
+    def __repr__(self):
+        return si_format(self, precision=self._precision)
+
+
 def _img(path: str):
     p = IMAGES / path
     if p.exists():
@@ -97,9 +117,27 @@ def folium_map():
         for k in to_remove:
             m._children.pop(k, None)
 
+    with st.spinner("Computing prediction, please wait..."):
+        smoothed_pred, smoothed_obs, (corr, mean_dev, obs_total, pred_total) = get_predictions()
+    print('smoothed_pred: ', smoothed_pred)
+    print('smoothed_obs: ', smoothed_obs)
+
+    
+    metr_cols = st.columns([1,1,1,1,1, 3])
+    with metr_cols[0]:
+        st.metric('Per-sample corr (non-trivial)', SiNumber(corr))
+    with metr_cols[1]:
+        st.metric('Mean Poisson deviance', SiNumber(mean_dev))
+    with metr_cols[2]:
+        st.metric('Totals — observed', SiNumber(obs_total))
+    with metr_cols[3]:
+        st.metric('Predicted', SiNumber(pred_total))
+    with metr_cols[4]:
+        st.metric('Ratio', SiNumber(pred_total/max(1,obs_total)))
+        
     st_folium(m, key="app_map", width="stretch")
 
-
+@st.cache_data
 def get_predictions():
     tx = st.session_state.model 
     test_ds = st.session_state.test_ds
@@ -134,9 +172,7 @@ def get_predictions():
 
     obs_total  = float(y_cat.sum())
     pred_total = float(pred_cat.sum())
-    #print(f"[TEST] Totals — observed: {obs_total:.0f}  predicted: {pred_total:.1f}  ratio={pred_total/max(1,obs_total):.2f}")
-    #print(f"[TEST] Per-sample corr (non-trivial): {corr:.3f}")
-    #print(f"[TEST] Mean Poisson deviance: {mean_dev:.3f}")
+
 
     # --- reconstruct LAST test frame grid for mapping ---
     # In the TEST dataset, valid target times are local t ∈ [K, T_te_full-1]
@@ -183,7 +219,5 @@ cols = st.columns([2,2])
 with cols[1]:
     with st.container(height=1000):
         st.header("AI MODEL (IMPLEMENTATION AND RESULTS)")"""
-
-print(get_predictions())
 
 
