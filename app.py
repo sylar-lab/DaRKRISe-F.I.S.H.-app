@@ -190,7 +190,7 @@ def build_map_for_mode(mode: str, smoothed_pred, smoothed_obs, metrics, key_suff
         vmax_pred = max(vmin_pred + 1e-6, float(sm_p.max()) if sm_p.max() > 0 else 1.0)
     if vmax_obs <= vmin_obs:
         vmax_obs = max(vmin_obs + 1e-6, float(sm_o.max()) if sm_o.max() > 0 else 1.0)
-    cmap_pred = cm.get_cmap('Reds'); cmap_obs = cm.get_cmap('Blues')
+    cmap_pred = cm.get_cmap('Reds'); cmap_obs = cm.get_cmap('Purples')
     norm_pred = mcolors.Normalize(vmin=vmin_pred, vmax=vmax_pred)
     norm_obs = mcolors.Normalize(vmin=vmin_obs, vmax=vmax_obs)
 
@@ -320,7 +320,7 @@ def build_map_for_mode(mode: str, smoothed_pred, smoothed_obs, metrics, key_suff
 
     # Use distinct warm/cool colormaps to avoid visual confusion when both layers are visible
     cmap_pred = cm.get_cmap('Reds')  # warm -> predicted
-    cmap_obs = cm.get_cmap('Blues')  # cool -> observed
+    cmap_obs = cm.get_cmap('Purples')  # purple -> observed
     norm_pred = mcolors.Normalize(vmin=vmin_pred, vmax=vmax_pred)
     norm_obs = mcolors.Normalize(vmin=vmin_obs, vmax=vmax_obs)
 
