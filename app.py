@@ -17,6 +17,13 @@ import pickle
 from torch import nn
 from model.src.helpers import database_helpers, model_helpers
 from si_prefix import si_format, si_parse
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+from PIL import Image
+import io
+from folium.plugins import HeatMap
+from branca.colormap import LinearColormap
+import matplotlib.colors as mcolors
 
 class TinyTransformerMultiExo(nn.Module):
     """
@@ -94,11 +101,20 @@ def folium_map():
     """Create a folium.Map centered and fitted"""
 
     # Use the zoom value from session state (set by the sidebar slider)
+    # enforce zoom bounds
+    ZOOM_MIN = 5
+    ZOOM_MAX = 9
     zoom = int(st.session_state.get("zoom", ZOOM_START))
+    if zoom < ZOOM_MIN:
+        zoom = ZOOM_MIN
+    if zoom > ZOOM_MAX:
+        zoom = ZOOM_MAX
 
     m = folium.Map(
         location=CENTER,
         zoom_start=zoom,
+        min_zoom=ZOOM_MIN,
+        max_zoom=ZOOM_MAX,
         tiles='https://services.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
         attr='Tiles &copy; Esri &mdash; Source: Esri, GEBCO, NOAA, National Geographic, DeLorme, NAVTEQ, and other contributors',
         control_scale=True,
@@ -119,11 +135,14 @@ def folium_map():
 
     with st.spinner("Computing prediction, please wait..."):
         smoothed_pred, smoothed_obs, (corr, mean_dev, obs_total, pred_total) = get_predictions()
-    print('smoothed_pred: ', smoothed_pred)
-    print('smoothed_obs: ', smoothed_obs)
+    # Fix orientation: rotate arrays 90° clockwise (user requested fixed orientation)
+    try:
+        smoothed_pred = np.rot90(smoothed_pred, k=3)
+        smoothed_obs = np.rot90(smoothed_obs, k=3)
+    except Exception:
+        pass
 
-    
-    metr_cols = st.columns([1,1,1,1,1, 3])
+    metr_cols = st.columns([1,1,1,1,1])
     with metr_cols[0]:
         st.metric('Per-sample corr (non-trivial)', SiNumber(corr))
     with metr_cols[1]:
@@ -134,8 +153,120 @@ def folium_map():
         st.metric('Predicted', SiNumber(pred_total))
     with metr_cols[4]:
         st.metric('Ratio', SiNumber(pred_total/max(1,obs_total)))
-        
-    st_folium(m, key="app_map", width="stretch")
+    
+    # --- render smoothed arrays as GeoJSON grid tiles (vector only) ---
+    ds = int(st.session_state.get('overlay_downsample', 1))
+    thresh_pct = float(st.session_state.get('overlay_threshold_pct', 5)) / 100.0
+    H, W = smoothed_pred.shape
+
+    # grid indices (downsampled)
+    rows = np.arange(0, H, ds)
+    cols = np.arange(0, W, ds)
+
+    # edges for polygon coordinates (row 0 -> LAT_MAX top)
+    lat_edges = np.linspace(LAT_MAX, LAT_MIN, H+1)
+    lon_edges = np.linspace(LON_MIN, LON_MAX, W+1)
+
+    # determine color scaling using robust percentile
+    p_low = 2   # use 2nd percentile as vmin to avoid mapping tiny values to white
+    p_high = 98
+    vmax_pred = float(np.nanpercentile(smoothed_pred, p_high))
+    vmax_obs = float(np.nanpercentile(smoothed_obs, p_high))
+    vmin_pred = float(np.nanpercentile(smoothed_pred, p_low))
+    vmin_obs = float(np.nanpercentile(smoothed_obs, p_low))
+    if vmax_pred <= vmin_pred:
+        vmax_pred = max(vmin_pred + 1e-6, float(smoothed_pred.max()) if smoothed_pred.max() > 0 else 1.0)
+    if vmax_obs <= vmin_obs:
+        vmax_obs = max(vmin_obs + 1e-6, float(smoothed_obs.max()) if smoothed_obs.max() > 0 else 1.0)
+
+    # Use distinct warm/cool colormaps to avoid visual confusion when both layers are visible
+    cmap_pred = cm.get_cmap('Reds')  # warm -> predicted
+    cmap_obs = cm.get_cmap('Blues')  # cool -> observed
+    norm_pred = mcolors.Normalize(vmin=vmin_pred, vmax=vmax_pred)
+    norm_obs = mcolors.Normalize(vmin=vmin_obs, vmax=vmax_obs)
+
+    features_pred = {"type": "FeatureCollection", "features": []}
+    features_obs = {"type": "FeatureCollection", "features": []}
+
+    for i in rows:
+        for j in cols:
+            # aggregate block values
+            block_pred = smoothed_pred[i:i+ds, j:j+ds]
+            block_obs = smoothed_obs[i:i+ds, j:j+ds]
+            val_pred = float(np.nanmean(block_pred)) if block_pred.size else 0.0
+            val_obs = float(np.nanmean(block_obs)) if block_obs.size else 0.0
+
+            # skip both if below their respective thresholds
+            keep_pred = (val_pred > 0) and (val_pred >= vmax_pred * thresh_pct)
+            keep_obs = (val_obs > 0) and (val_obs >= vmax_obs * thresh_pct)
+            if not (keep_pred or keep_obs):
+                continue
+
+            # polygon corners from edges: lat,lon pairs
+            lat0 = lat_edges[i]
+            lat1 = lat_edges[min(i+ds, H)]
+            lon0 = lon_edges[j]
+            lon1 = lon_edges[min(j+ds, W)]
+            # polygon in lat,lon order then convert to GeoJSON lon,lat
+            poly_latlon = [[lat0, lon0], [lat0, lon1], [lat1, lon1], [lat1, lon0], [lat0, lon0]]
+
+            if keep_pred:
+                rgba = cmap_pred(norm_pred(val_pred))
+                hexcol = mcolors.to_hex(rgba)
+                feat = {
+                    "type": "Feature",
+                    "geometry": {"type": "Polygon", "coordinates": [[[lon, lat] for lat, lon in poly_latlon]]},
+                    "properties": {"value": val_pred, "style": {"fillColor": hexcol, "color": hexcol, "weight": 0, "fillOpacity": float(st.session_state.get('overlay_opacity', 0.6))}}
+                }
+                features_pred["features"].append(feat)
+
+            if keep_obs:
+                rgba = cmap_obs(norm_obs(val_obs))
+                hexcol = mcolors.to_hex(rgba)
+                feat = {
+                    "type": "Feature",
+                    "geometry": {"type": "Polygon", "coordinates": [[[lon, lat] for lat, lon in poly_latlon]]},
+                    "properties": {"value": val_obs, "style": {"fillColor": hexcol, "color": hexcol, "weight": 0, "fillOpacity": float(st.session_state.get('overlay_opacity', 0.6))}}
+                }
+                features_obs["features"].append(feat)
+
+    # Add GeoJSON layers if they contain features
+    if features_pred["features"]:
+        folium.GeoJson(features_pred, name='Predicted (grid)').add_to(m)
+    if features_obs["features"]:
+        folium.GeoJson(features_obs, name='Observed (grid)').add_to(m)
+
+    # Add legends for both layers
+    # Use explicit red/blue ramps for legends to match the tile colors
+    ramp_pred = [mcolors.to_hex(cmap_pred(x)) for x in np.linspace(0.05, 1.0, 7)]
+    ramp_obs = [mcolors.to_hex(cmap_obs(x)) for x in np.linspace(0.05, 1.0, 7)]
+    pred_cmap = LinearColormap(ramp_pred, vmin=vmin_pred, vmax=vmax_pred, caption='Predicted (smoothed)')
+    obs_cmap = LinearColormap(ramp_obs, vmin=vmin_obs, vmax=vmax_obs, caption='Observed (smoothed)')
+    pred_cmap.add_to(m)
+    obs_cmap.add_to(m)
+
+    folium.LayerControl().add_to(m)
+
+    # Capture interactive map state to preserve zoom/center between reruns and avoid jumpy zoom
+    map_ret = st_folium(m, key="app_map", width="stretch")
+    try:
+        if map_ret and isinstance(map_ret, dict):
+            zval = None
+            if 'zoom' in map_ret:
+                zval = map_ret.get('zoom')
+            elif 'center' in map_ret and 'zoom' in map_ret.get('center', {}):
+                zval = map_ret.get('center', {}).get('zoom')
+            # clamp and store
+            if zval is not None:
+                try:
+                    zv = int(zval)
+                    zv = max(ZOOM_MIN, min(ZOOM_MAX, zv))
+                    st.session_state.zoom = zv
+                except Exception:
+                    pass
+    except Exception:
+        # non-fatal: ignore map state update failures
+        pass
 
 @st.cache_data
 def get_predictions():
@@ -208,16 +339,24 @@ with st.expander("Interface Overview", expanded=False):
 with st.sidebar:
     _img("darkrise_shark_logo.png")
     st.header("Map Controls")
-    st.slider("Zoom start", min_value=3, max_value=12, value=ZOOM_START, key="zoom")
-    st.checkbox("Show training area", value=True, key="show_bbox")
+    st.slider("Zoom start", min_value=5, max_value=9, value=max(5, min(9, ZOOM_START)), key="zoom")
+    st.checkbox("Show selected training area", value=True, key="show_bbox")
+    # Overlay display controls
+    st.markdown("---")
+    st.subheader("Overlay display")
+    st.slider("Overlay opacity", 0.0, 1.0, value=0.69, key="overlay_opacity")
+    st.slider("Hide low values (% of max)", 0, 50, value=14, key="overlay_threshold_pct")
+    st.slider("Downsample factor (1 = no downsample)", 1, 8, value=1, key="overlay_downsample")
 
-map_fragment()
+
 cols = st.columns([2,2])
-"""with cols[0]:
-    with st.container(height=1000):
-        pass
+with cols[0]:
+    map_fragment()
 with cols[1]:
-    with st.container(height=1000):
-        st.header("AI MODEL (IMPLEMENTATION AND RESULTS)")"""
+    st.markdown('\n')
+    st.markdown('\n')
+    st.markdown('\n')
+    st.title('Dataset visualization')
+    st.image(ROOT/'data'/'images'/'Shark positions on workd map.png')
 
 
